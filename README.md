@@ -58,7 +58,7 @@ Run the following scripts in order.
 
 ## 1. Add provenance tokens to the database tables
 
-python add_prov_columns_tpcds.py
+python add_prov_cols.py
 
 This adds a column `prov` to all TPC-DS tables and fills it with short identifiers such as:
 
@@ -69,7 +69,7 @@ C1, C2, C3 ...
 
 ## 2. Generate provenance features and create train/test datasets
 
-python generate_and_split_all_provenance_datasets.py
+python gen_parquet.py
 
 This script:
 
@@ -101,5 +101,3 @@ q2_split/
 python query_similarity.py
 
 The script loads all parquet datasets and evaluates several provenance representations and machine learning models for query classification.
-
-Results are saved to a CSV file.
