@@ -37,8 +37,8 @@ import seaborn as sns
 DATA_ROOT = "."  # Root directory containing dataset folders
 
 # Glob patterns to locate training and testing parquet files
-TRAIN_GLOB = os.path.join(DATA_ROOT, "**", "*_train", "*.parquet")
-TEST_GLOB = os.path.join(DATA_ROOT, "**", "*_test", "*.parquet")
+TRAIN_GLOB = os.path.join(DATA_ROOT, "**", "q*_train", "*.parquet")
+TEST_GLOB = os.path.join(DATA_ROOT, "**", "q*_test", "*.parquet")
 
 
 # ------------------------------------------------------------------
@@ -1349,7 +1349,6 @@ def main() -> None:
             "confusion_token_tf_rf.pdf",
         )
 
-     
 
 if __name__ == "__main__":
     main()
