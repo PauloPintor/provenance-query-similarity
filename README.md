@@ -84,7 +84,7 @@ To ensure the classifiers perform optimally, specific preprocessing pipelines ar
 * **TF-IDF Transformation:** For representations evaluating token or witness term frequencies (`token_tfidf` and `witness_tfidf`), raw frequency counts are transformed using `TfidfTransformer()` before being passed to the classifiers.
 * **Feature Hashing:** High-dimensional provenance sets are mapped into fixed-dimensional vectors using a custom, deterministic 64-bit hashing function. The target dimensions are `32,768` (for lineage and token TF) and `16,384` (for atomic why and witness TF).
 
---
+---
 
 # Running the pipeline
 
