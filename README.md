@@ -52,7 +52,42 @@ Each element of `witnesses` represents a **why-provenance witness** encoded as a
 
 ---
 
+# Machine Learning Methods and Configurations
+
+All models are implemented using standard, well-established libraries (`scikit-learn` and `XGBoost`). 
+
+To ensure a fair baseline and straightforward reproducibility, **most classifiers rely on their default hyperparameter configurations**. A global random seed (`RANDOM_SEED = 13`) is strictly enforced across all models and data sampling functions to guarantee deterministic results across different execution runs.
+
+## 1. Model Specifications
+
+* **k-Nearest Neighbours (k-NN):** * The models were evaluated using both **k = 1 and k = 5** neighbours (adjustable via `SKLEARN_KNN_K` and `CUSTOM_KNN_K` in the provided script).
+    * For vector-based feature representations, we utilise `scikit-learn`'s `NearestNeighbors` configured with the `cosine` metric.
+    * For set-based and blocked representations (where direct set comparisons like Jaccard or soft-matching are required), we use a custom implementation that retrieves the top-k neighbours and applies similarity-weighted voting to determine the final class.
+* **Logistic Regression:** 
+    * Implemented via `scikit-learn`'s `LogisticRegression`. 
+    * Runs with default parameters (L2 penalty, L-BFGS solver) and is strictly governed by the global random seed.
+* **Multinomial Naive Bayes:** 
+    * Implemented using `MultinomialNB()`. 
+    * Kept entirely at its default settings, making it a fast, lightweight baseline for the frequency-based (TF) and hashed representations.
+* **Random Forest Classifier:** 
+    * Uses `scikit-learn`'s `RandomForestClassifier`. 
+    * Configured with the default parameters (e.g., 100 trees, Gini impurity) and tied to the global random seed. It operates on dense matrices internally.
+* **XGBoost:** 
+    * Implemented using the `XGBClassifier` from the `xgboost` Python package. 
+    * Relies entirely on the default gradient boosting parameters (e.g., learning rate of 0.3, max depth of 6) whilst enforcing the global random seed.
+
+## 2. Feature Preprocessing & Scaling
+
+To ensure the classifiers perform optimally, specific preprocessing pipelines are applied dynamically based on the model and feature type:
+
+* **Standardisation:** For distance-based and linear models (k-NN and Logistic Regression), the feature vectors are scaled using `scikit-learn`'s `StandardScaler`. It automatically adapts to sparse matrices by skipping the mean centring (`with_mean=False`) to preserve sparsity.
+* **TF-IDF Transformation:** For representations evaluating token or witness term frequencies (`token_tfidf` and `witness_tfidf`), raw frequency counts are transformed using `TfidfTransformer()` before being passed to the classifiers.
+* **Feature Hashing:** High-dimensional provenance sets are mapped into fixed-dimensional vectors using a custom, deterministic 64-bit hashing function. The target dimensions are `32,768` (for lineage and token TF) and `16,384` (for atomic why and witness TF).
+
+--
+
 # Running the pipeline
+
 
 Run the following scripts in order.
 
