@@ -1,6 +1,6 @@
 # Query-Level Provenance for Query-Template Identification
 
-This repository contains the data and experimental code for studying **query-template identification from query-level data provenance**. Tuple-level Lineage and Why-provenance are aggregated across each query result to characterise the contributing tuples, their witness combinations, occurrence frequencies and structural properties.
+This repository contains the experimental code for studying **query-template identification from query-level data provenance**. Tuple-level Lineage and Why-provenance are aggregated across each query result to characterise the contributing tuples, their witness combinations, occurrence frequencies and structural properties.
 
 The classifiers use these provenance representations, rather than SQL text, execution plans or result values, to predict the template associated with a query. The evaluation compares classification accuracy, macro-F1 and mean test-processing time across different representations, classifiers and training-history sizes.
 
@@ -12,9 +12,10 @@ The classifiers use these provenance representations, rather than SQL text, exec
 | `validate_provenance_parquets.py` | Read-only consistency checks on the materialised provenance data. |
 | `psd_feature_experiments.py` | Comparisons between PSD descriptor groups, individual feature removals and single-descriptor models. |
 | `psd_logreg_convergence.py` | Additional Logistic Regression convergence checks for three PSD descriptor groups. |
+| `add_prov_cols.py` | Adds and populates provenance-token columns in the TPC-DS base tables. |
 | `generate_provenance_dataset.py` | Optional provenance materialisation from the supplied SQL queries and an annotated DuckDB database. |
 
-The published train/test Parquets are sufficient to run the classification and PSD analyses. Regenerating provenance or executing SQL is not required for these experiments.
+The classification and PSD analyses read materialised train/test Parquets. Once these files are available locally, running the analyses does not require access to DuckDB or SQL execution. The Parquets are not included in this Git repository because of their total size; see [Data Availability](#data-availability) and [Database and Provenance Preparation](#database-and-provenance-preparation).
 
 ## Installation
 
@@ -26,13 +27,13 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-The evaluation uses NumPy, PyArrow, SciPy, scikit-learn, XGBoost, Matplotlib and Seaborn. DuckDB is needed only for optional provenance generation.
+The evaluation uses NumPy, PyArrow, SciPy, scikit-learn, XGBoost, Matplotlib and Seaborn. DuckDB is needed only for database annotation and provenance generation.
 
 For exact experimental reproduction, use the original library versions. An unpinned `requirements.txt` installs the dependencies but does not recreate the original environment. PSD runs record their library versions and input fingerprints in `manifest.json`; the convergence analysis checks these against its reference run.
 
 ## Dataset
 
-The workload contains **12,500 distinct query instances** from ten TPC-DS templates: **Q3, Q12, Q13, Q18, Q20, Q48, Q66, Q84, Q89 and Q98**. Each Parquet record represents one query execution and contains its template label and materialised provenance.
+The TPC-DS database used in the experiments was generated using Python at **scale factor 1 (SF1)**. The workload contains **12,500 distinct query instances** from ten TPC-DS templates: **Q3, Q12, Q13, Q18, Q20, Q48, Q66, Q84, Q89 and Q98**. Each Parquet record represents one query execution and contains its template label and materialised provenance.
 
 | Partition | Queries per template | Total queries |
 | --- | ---: | ---: |
@@ -40,6 +41,10 @@ The workload contains **12,500 distinct query instances** from ten TPC-DS templa
 | Test | 250 | 2,500 |
 
 The main experiments use nested training subsets of 50, 100, 250, 500, 750 and 1,000 queries per template, corresponding to 500, 1,000, 2,500, 5,000, 7,500 and 10,000 queries in total. The test set remains fixed. Subset selection is deterministic, with seed 13.
+
+### Data Availability
+
+The materialised provenance Parquets are excluded from this Git repository because of their total size. The directory layout below describes the local inputs expected by the scripts, not data bundled with the repository. The provenance generator can produce Parquets from the SQL workload and an annotated database, but does not recreate the final train/test partitions automatically.
 
 The data root should contain the final partitions in this layout:
 
@@ -237,21 +242,44 @@ python evaluate_provenance.py --plots-only
 
 These plots include selected confusion matrices, an accuracy curve, global and class-specific PSD importance, contribution scatter plots and individual-ablation plots. The built-in accuracy curve uses four configurations and a per-template training-size axis. The training-time figure and the final five-series accuracy figure require their separate plotting scripts; they are not produced by this command.
 
-## Optional Provenance Generation
+## Database and Provenance Preparation
 
-`generate_provenance_dataset.py` is intended for regenerating provenance, not for running classification from the existing Parquets. It requires the `qN_versions/*.sql` files and a DuckDB database whose base tuples already have provenance tokens.
+These steps are needed when generating provenance from SQL. They can be skipped when the final train/test Parquets are already available locally.
 
-After installing DuckDB, an example invocation is:
+### 1. Prepare the TPC-DS Database
+
+The experiments used a TPC-DS database generated using Python at SF1. The commands below assume that the TPC-DS base tables already exist in a DuckDB database. `add_prov_cols.py` annotates these tables; it does not generate the TPC-DS data.
 
 ```bash
 python -m pip install duckdb
+export DUCKDB_PATH="./tpcds.duckdb"
+export DUCKDB_SCHEMA="tpcds"
+```
+
+Adjust the database path and schema to the existing database. These environment variables configure `add_prov_cols.py`; their defaults are `tpcds.duckdb` and `tpcds`, respectively.
+
+### 2. Add Provenance Tokens
+
+```bash
+python add_prov_cols.py
+```
+
+For each TPC-DS base table present in the selected schema, the script adds a `prov VARCHAR` column if it does not already exist, then assigns a token to every row. Tokens combine a table-specific prefix with a sequential number, for example `C1` for a customer tuple and `SS1` for a store-sales tuple. Numbering follows the table's `rowid` order. Missing tables are reported and skipped.
+
+**This script modifies the database in place and overwrites existing `prov` values.** Run it before materialising provenance, and use the same annotated database for all training and test queries. Token identities depend on the database's row ordering and should not be assumed to remain identical across independently regenerated databases.
+
+### 3. Generate Provenance Parquets
+
+`generate_provenance_dataset.py` requires the `qN_versions/*.sql` files and the annotated database. Pass the same database path and schema used above:
+
+```bash
 python generate_provenance_dataset.py \
   --data-root . \
-  --db ./tpcds_prov.duckdb \
-  --schema tpcds \
+  --db "$DUCKDB_PATH" \
+  --schema "$DUCKDB_SCHEMA" \
   --output-root ./generated_provenance
 ```
 
-Adjust the database path and schema to the annotated database being used. The database is opened read-only, and the output root must be new. The generator writes `qN_versions_full` directories; it does **not** create the train/test split. Q84 uses the single-witness-per-result-row format; the other selected templates use witness collections.
+Unlike the annotation script, the generator opens the database read-only. Its output root must be new. It writes `qN_versions_full` directories; it does **not** create the train/test split. Q84 uses the single-witness-per-result-row format; the other selected templates use witness collections.
 
 For reproduction of the published classification results, use the final train/test partitions rather than repartitioning newly generated data.
