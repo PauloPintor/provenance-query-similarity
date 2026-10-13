@@ -1,138 +1,257 @@
-# Data Provenance-based Query Similarity
+# Query-Level Provenance for Query-Template Identification
 
-This repository contains the code used in the experiments for the paper  
-**“Data Provenance-based Query Similarity”**.
+This repository contains the data and experimental code for studying **query-template identification from query-level data provenance**. Tuple-level Lineage and Why-provenance are aggregated across each query result to characterise the contributing tuples, their witness combinations, occurrence frequencies and structural properties.
 
-The experiments evaluate whether **data provenance representations** can be used to measure similarity between SQL queries and classify them according to their **query template**.
+The classifiers use these provenance representations, rather than SQL text, execution plans or result values, to predict the template associated with a query. The evaluation compares classification accuracy, macro-F1 and mean test-processing time across different representations, classifiers and training-history sizes.
 
-The experiments use **TPC-DS queries executed on DuckDB**.
+## Scripts
 
----
+| Script | Purpose |
+| --- | --- |
+| `evaluate_provenance.py` | Main classification experiments, timing measurements, selected PSD attributions and individual ablations. |
+| `validate_provenance_parquets.py` | Read-only consistency checks on the materialised provenance data. |
+| `psd_feature_experiments.py` | Comparisons between PSD descriptor groups, individual feature removals and single-descriptor models. |
+| `psd_logreg_convergence.py` | Additional Logistic Regression convergence checks for three PSD descriptor groups. |
+| `generate_provenance_dataset.py` | Optional provenance materialisation from the supplied SQL queries and an annotated DuckDB database. |
 
-# Requirements
+The published train/test Parquets are sufficient to run the classification and PSD analyses. Regenerating provenance or executing SQL is not required for these experiments.
 
-Python ≥ 3.10
+## Installation
 
-Install dependencies:
+Use Python 3.10 or newer. From the repository root, create an environment and install the evaluation dependencies:
 
-pip install duckdb pyarrow numpy scikit-learn xgboost matplotlib seaborn
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
 
----
+The evaluation uses NumPy, PyArrow, SciPy, scikit-learn, XGBoost, Matplotlib and Seaborn. DuckDB is needed only for optional provenance generation.
 
-# Database
+For exact experimental reproduction, use the original library versions. An unpinned `requirements.txt` installs the dependencies but does not recreate the original environment. PSD runs record their library versions and input fingerprints in `manifest.json`; the convergence analysis checks these against its reference run.
 
-A **TPC-DS database in DuckDB** is required.
+## Dataset
 
-Example database file:
+The workload contains **12,500 distinct query instances** from ten TPC-DS templates: **Q3, Q12, Q13, Q18, Q20, Q48, Q66, Q84, Q89 and Q98**. Each Parquet record represents one query execution and contains its template label and materialised provenance.
 
-tpcds.duckdb
+| Partition | Queries per template | Total queries |
+| --- | ---: | ---: |
+| Training | 1,000 | 10,000 |
+| Test | 250 | 2,500 |
 
-Set the database path:
+The main experiments use nested training subsets of 50, 100, 250, 500, 750 and 1,000 queries per template, corresponding to 500, 1,000, 2,500, 5,000, 7,500 and 10,000 queries in total. The test set remains fixed. Subset selection is deterministic, with seed 13.
 
-export DUCKDB_PATH=tpcds.duckdb
+The data root should contain the final partitions in this layout:
 
----
-
-# Query Templates
-
-SQL query templates must be organized in folders named:
-
-q1_versions  
-q2_versions  
-q3_versions  
+```text
+q3_train/
+    *.parquet
+q3_test/
+    *.parquet
 ...
+q98_train/
+    *.parquet
+q98_test/
+    *.parquet
+```
 
-Each folder contains multiple `.sql` files corresponding to different query instances.
+Records include query identifiers, stored SQL, `lineage_hash`, `monoids_hash`, `witnesses`, `token_tf`, `witness_tf`, and provenance counts. The four counts used to construct PSD are `nwitness_unique`, `nwitness_total`, `ntokens_unique` and `ntokens_total`.
 
-Each query must return a column named:
+Use the existing partitions when reproducing the experiments. Neither the evaluator nor the PSD scripts creates a new train/test split.
 
-witnesses
+### Configure Paths
 
-Each element of `witnesses` represents a **why-provenance witness** encoded as a list of provenance tokens.
+The commands below assume the `qN_train` and `qN_test` directories are in the repository root. If they are under `data/`, change the first value to `./data`.
 
----
+```bash
+export PROV_DATA_ROOT="."
+export PROV_TRAIN_GLOB="$PROV_DATA_ROOT/q*_train/*.parquet"
+export PROV_TEST_GLOB="$PROV_DATA_ROOT/q*_test/*.parquet"
+export PROV_OUTPUT_DIR="./results/evaluation"
+```
 
-# Machine Learning Methods and Configurations
+These non-recursive patterns exclude directories such as `nn_q13_train` and nested backups. Keep only the final article partitions under matching directory names. The evaluator's broader recursive defaults remain active if the glob overrides are omitted.
 
-All models are implemented using standard, well-established libraries (`scikit-learn` and `XGBoost`). 
+The validator and PSD scripts receive `--data-root` explicitly. Their default input patterns also select `q*_train` and `q*_test` directly under that root.
 
-To ensure a fair baseline and straightforward reproducibility, **most classifiers rely on their default hyperparameter configurations**. A global random seed (`RANDOM_SEED = 13`) is strictly enforced across all models and data sampling functions to guarantee deterministic results across different execution runs.
+## 1. Validate the Data
 
-## 1. Model Specifications
+Run the validator before starting the experiments:
 
-* **k-Nearest Neighbours (k-NN):** * The models were evaluated using both **k = 1 and k = 5** neighbours (adjustable via `SKLEARN_KNN_K` and `CUSTOM_KNN_K` in the provided script).
-    * For vector-based feature representations, we utilise `scikit-learn`'s `NearestNeighbors` configured with the `cosine` metric.
-    * For set-based and blocked representations (where direct set comparisons like Jaccard or soft-matching are required), we use a custom implementation that retrieves the top-k neighbours and applies similarity-weighted voting to determine the final class.
-* **Logistic Regression:** 
-    * Implemented via `scikit-learn`'s `LogisticRegression`. 
-    * Runs with default parameters (L2 penalty, L-BFGS solver) and is strictly governed by the global random seed.
-* **Multinomial Naive Bayes:** 
-    * Implemented using `MultinomialNB()`. 
-    * Kept entirely at its default settings, making it a fast, lightweight baseline for the frequency-based (TF) and hashed representations.
-* **Random Forest Classifier:** 
-    * Uses `scikit-learn`'s `RandomForestClassifier`. 
-    * Configured with the default parameters (e.g., 100 trees, Gini impurity) and tied to the global random seed. It operates on dense matrices internally.
-* **XGBoost:** 
-    * Implemented using the `XGBClassifier` from the `xgboost` Python package. 
-    * Relies entirely on the default gradient boosting parameters (e.g., learning rate of 0.3, max depth of 6) whilst enforcing the global random seed.
+```bash
+python validate_provenance_parquets.py \
+  --data-root "$PROV_DATA_ROOT" \
+  --output-dir ./results/validation
+```
 
-## 2. Feature Preprocessing & Scaling
+It checks agreement between the stored witnesses, Lineage, witness identifiers, term frequencies, counts and witness-size histograms. For Q84, it additionally checks that the total number of witness occurrences equals the number of output rows, consistent with its single-witness-per-result-row format.
 
-To ensure the classifiers perform optimally, specific preprocessing pipelines are applied dynamically based on the model and feature type:
+The validator writes `validation_summary.csv` and `validation_issues.csv`. It does not modify the Parquets, and its output directory must not already exist. Exit status 1 indicates validation errors or missing selected templates; status 0 indicates that the checked records passed, possibly with advisory warnings.
 
-* **Standardisation:** For distance-based and linear models (k-NN and Logistic Regression), the feature vectors are scaled using `scikit-learn`'s `StandardScaler`. It automatically adapts to sparse matrices by skipping the mean centring (`with_mean=False`) to preserve sparsity.
-* **TF-IDF Transformation:** For representations evaluating token or witness term frequencies (`token_tfidf` and `witness_tfidf`), raw frequency counts are transformed using `TfidfTransformer()` before being passed to the classifiers.
-* **Feature Hashing:** High-dimensional provenance sets are mapped into fixed-dimensional vectors using a custom, deterministic 64-bit hashing function. The target dimensions are `32,768` (for lineage and token TF) and `16,384` (for atomic why and witness TF).
+If the original `qN_versions/*.sql` files are also available, add `--check-sql-files` to check query coverage and compare stored SQL text with those files. Without that option, external SQL files are not required.
 
----
+These are consistency checks, not a re-execution of the SQL queries. Witness TF multiplicities are cross-checked against the other stored fields, not independently recovered from the database. The validator also does not enforce the exact train/test partition sizes.
 
-# Running the pipeline
+## 2. Run the Main Experiments
 
+### One Configuration
 
-Run the following scripts in order.
+To check the pipeline with PSD and XGBoost using 50 training queries per template:
 
-## 1. Add provenance tokens to the database tables
+```bash
+python evaluate_provenance.py \
+  --method scalars --model xgboost --train-k 50 --skip-plots
+```
 
-python add_prov_cols.py
+### Complete Evaluation
 
-This adds a column `prov` to all TPC-DS tables and fills it with short identifiers such as:
+To run all supported representation/classifier combinations at all six training sizes:
 
-SS1, SS2, SS3 ...  
-C1, C2, C3 ...
+```bash
+python evaluate_provenance.py --skip-plots
+```
 
----
+Configurations run sequentially in separate processes. This includes the more expensive direct-comparison methods, particularly Blocked Why-provenance.
 
-## 2. Generate provenance features and create train/test datasets
+For example, to run only Blocked Why-provenance with 5-NN at the largest training size:
 
-python gen_parquet.py
+```bash
+python evaluate_provenance.py \
+  --method why_blocked --model knn --knn-k 5 --train-k 1000 --skip-plots
+```
 
-This script:
+**`--train-k` always denotes queries per template**, not the total training-set size.
 
-- finds all folders ending with `_versions`
-- executes the SQL queries in DuckDB
-- extracts provenance features
-- splits queries by template
-- writes train/test parquet datasets
+### Representations and Classifiers
 
-For each query folder:
+| `--method` | Representation | Supported classifiers |
+| --- | --- | --- |
+| `lineage_jaccard` | Direct Lineage | 1-NN, 5-NN |
+| `atomic_why_jaccard` | Direct Atomic Why-provenance | 1-NN, 5-NN |
+| `why_blocked` | Blocked Why-provenance | 1-NN, 5-NN |
+| `lineage_vec` | Binary Lineage | Supervised models |
+| `atomic_why_vec` | Binary Atomic Why-provenance | Supervised models |
+| `token_tfidf` | Token TF with TF-IDF weighting | 1-NN, 5-NN, supervised models |
+| `witness_tfidf` | Witness TF with TF-IDF weighting | 1-NN, 5-NN, supervised models |
+| `scalars` | Seven-descriptor PSD | 1-NN, 5-NN, supervised models |
 
-250 queries per template → test set  
-remaining queries → train set
+The supervised model identifiers are `logreg`, `naive_bayes`, `random_forest` and `xgboost`. For nearest-neighbour methods, use `--model knn` and select `--knn-k 1` or `--knn-k 5`.
 
-Example output:
+The main evaluation uses library-default model settings, with seed 13 where applicable. Token-based vectors use 32,768 hash coordinates; witness-based vectors use 16,384. Direct set comparisons do not use vector feature hashing. TF-IDF and standardisation are fitted on training data only.
 
-q1_split/  
-&nbsp;&nbsp;&nbsp;&nbsp;q1_train/  
-&nbsp;&nbsp;&nbsp;&nbsp;q1_test/
+### Outputs
 
-q2_split/  
-&nbsp;&nbsp;&nbsp;&nbsp;q2_train/  
-&nbsp;&nbsp;&nbsp;&nbsp;q2_test/
+Outputs are stored under `PROV_OUTPUT_DIR`:
 
----
+| File or directory | Contents |
+| --- | --- |
+| `final_template_results.csv` | Accuracy, macro-F1 and timing components for each configuration. |
+| `final_template_per_class_metrics.csv` | Precision, recall, F1 and support for each template. |
+| `Predictions/` | Query identifiers and predictions for each configuration. |
+| `XAI/` | Selected PSD attribution arrays, importance summaries and individual-ablation results. |
+| `Figures/` | Built-in plots, when requested. |
+| `final_template_errors.csv` | Failed configurations, when applicable. |
 
-## 3. Run the experiments
+For PSD with Logistic Regression and XGBoost at `--train-k 1000`, attribution and individual-ablation artifacts are generated automatically. `--skip-plots` suppresses figures, not these analyses.
 
-python query_similarity.py
+### Resume or Rerun
 
-The script loads all parquet datasets and evaluates several provenance representations and machine learning models for query classification.
+Repeating a command skips configurations with the results and artifacts checked by the evaluator. Add `--force` to rerun matching configurations and replace their outputs.
+
+Use a **new output directory** when changing the data, split, evaluator or software environment. Main-evaluation resume keys identify the training size, representation and classifier, but do not fingerprint the data or library versions. Do not run multiple controllers against the same output directory.
+
+### Timing Fields
+
+| Field | Meaning | Unit |
+| --- | --- | --- |
+| `fit_s` | Time in the model-fitting stage, including standardisation fitted within that stage. | Seconds |
+| `build_test_s` | Construction of the test representation, including TF-IDF transformation where applicable. | Seconds |
+| `pred_s` | Prediction or direct-comparison scoring; includes fitted scaling for vector k-NN and Logistic Regression. | Seconds |
+| `latency_ms` | Mean amortised test-processing time per query. | Milliseconds |
+
+The CSV field `latency_ms` is computed as:
+
+```text
+latency_ms = 1000 * (build_test_s + pred_s) / number_of_test_queries
+```
+
+It excludes SQL execution, provenance generation, Parquet loading, training-representation construction and model fitting. It is neither end-to-end runtime nor isolated online prediction latency. `fit_s` does not include every training preprocessing operation; for example, training TF-IDF construction happens before this stage.
+
+For Blocked Why-provenance, test records are streamed and scoring time is accumulated separately from loading. The preliminary per-query witness-cache preparation is outside the scoring timer. Construction of inverted indexes during scoring remains inside it.
+
+## 3. Analyse PSD Descriptors
+
+### Descriptor Experiments
+
+`psd_feature_experiments.py` reuses the evaluator's PSD construction, training selection, preprocessing and model functions. By default, it compares descriptor groups using XGBoost, Logistic Regression, Random Forest and 5-NN; performs individual feature removals; and trains seven single-descriptor XGBoost models.
+
+The principal groups are:
+
+| Identifier | Descriptors |
+| --- | --- |
+| `counts_4` | Distinct witnesses, total witness occurrences, distinct tokens and total token occurrences. |
+| `full_7` | The four counts plus distinct/total token ratio, distinct/total witness ratio and distinct-witness/distinct-token ratio. |
+| `reduced_5` | `full_7` without total witness occurrences and the distinct/total witness ratio. |
+
+The script also evaluates ratio-only, token-only, witness-only and no-witness-count groups. These additional configurations are recorded separately in its results.
+
+After completing the main evaluation, run:
+
+```bash
+python psd_feature_experiments.py \
+  --evaluation-script ./evaluate_provenance.py \
+  --data-root "$PROV_DATA_ROOT" \
+  --reference-results "$PROV_OUTPUT_DIR/final_template_results.csv" \
+  --output-dir ./results/psd_features
+```
+
+The reference check compares full-PSD scores against the main evaluation before proceeding with reduced-feature experiments. Use a fresh output directory for every run.
+
+Outputs include `psd_group_results.csv`, `psd_single_results.csv`, `psd_leave_one_out_results.csv`, per-template metrics, predictions and a `manifest.json` recording the configuration, code fingerprints, data fingerprints and software versions. PSD experiment timings are diagnostic and should not replace the main evaluator's test-processing measurements.
+
+### Logistic Regression Convergence
+
+`psd_logreg_convergence.py` is a separate verification for `full_7`, `counts_4` and `reduced_5`. It increases only `max_iter`, using training convergence to select a common iteration cap. Test scores are not used to choose that cap, and earlier results are not overwritten.
+
+Keep both PSD scripts in the same directory, then run:
+
+```bash
+python psd_logreg_convergence.py \
+  --evaluation-script ./evaluate_provenance.py \
+  --data-root "$PROV_DATA_ROOT" \
+  --reference-run ./results/psd_features \
+  --output-dir ./results/psd_convergence
+```
+
+The reference run must be complete and must have used the **same evaluator file, PSD experiment script and library versions**. The script also checks the data fingerprints and reproduces the reference predictions before assessing convergence. Even comment-only changes to a reference script change its fingerprint; use the original files when checking an existing run.
+
+Outputs include convergence attempts, original/converged score comparisons, predictions and a manifest. The script also produces `full_psd_result.csv` and attribution artifacts for the converged full-PSD model. These are separate from the main evaluation's default-parameter outputs.
+
+## Plotting
+
+The evaluator can regenerate its built-in plots from saved CSV and NPZ artifacts without loading Parquets or fitting models:
+
+```bash
+python evaluate_provenance.py --plots-only
+```
+
+These plots include selected confusion matrices, an accuracy curve, global and class-specific PSD importance, contribution scatter plots and individual-ablation plots. The built-in accuracy curve uses four configurations and a per-template training-size axis. The training-time figure and the final five-series accuracy figure require their separate plotting scripts; they are not produced by this command.
+
+## Optional Provenance Generation
+
+`generate_provenance_dataset.py` is intended for regenerating provenance, not for running classification from the existing Parquets. It requires the `qN_versions/*.sql` files and a DuckDB database whose base tuples already have provenance tokens.
+
+After installing DuckDB, an example invocation is:
+
+```bash
+python -m pip install duckdb
+python generate_provenance_dataset.py \
+  --data-root . \
+  --db ./tpcds_prov.duckdb \
+  --schema tpcds \
+  --output-root ./generated_provenance
+```
+
+Adjust the database path and schema to the annotated database being used. The database is opened read-only, and the output root must be new. The generator writes `qN_versions_full` directories; it does **not** create the train/test split. Q84 uses the single-witness-per-result-row format; the other selected templates use witness collections.
+
+For reproduction of the published classification results, use the final train/test partitions rather than repartitioning newly generated data.

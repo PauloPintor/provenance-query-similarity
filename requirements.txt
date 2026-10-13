@@ -1,0 +1,9 @@
+# Direct dependencies. These are not the recorded versions of the paper run.
+# Export the exact versions from the original experiment environment separately.
+numpy
+pyarrow
+scipy
+scikit-learn
+xgboost
+matplotlib
+seaborn
